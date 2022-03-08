@@ -17,8 +17,6 @@ class FlutterBlue {
     _channel.setMethodCallHandler((MethodCall call) async {
       _methodStreamController.add(call);
     });
-
-    _setLogLevelIfAvailable();
   }
 
   static FlutterBlue? _instance;
@@ -32,8 +30,8 @@ class FlutterBlue {
   LogLevel get logLevel => _logLevel;
 
   /// Checks whether the device supports Bluetooth
-  Future<bool> get isAvailable =>
-      _channel.invokeMethod('isAvailable').then<bool>((d) => d);
+  Future<bool> get isAvailable => throw Exception('flutterblue');
+  // _channel.invokeMethod('isAvailable').then<bool>((d) => d);
 
   /// Checks if Bluetooth functionality is turned on
   Future<bool> get isOn => _channel.invokeMethod('isOn').then<bool>((d) => d);
@@ -74,13 +72,6 @@ class FlutterBlue {
         .then((buffer) => protos.ConnectedDevicesResponse.fromBuffer(buffer))
         .then((p) => p.devices)
         .then((p) => p.map((d) => BluetoothDevice.fromProto(d)).toList());
-  }
-
-  _setLogLevelIfAvailable() async {
-    if (await isAvailable) {
-      // Send the log level to the underlying platforms.
-      setLogLevel(logLevel);
-    }
   }
 
   /// Starts a scan for Bluetooth Low Energy devices and returns a stream
