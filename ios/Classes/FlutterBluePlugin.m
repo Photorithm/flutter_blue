@@ -2,6 +2,9 @@
 // All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
+
+/// This was found on https://github.com/MZachmann/flutter_blue/commit/2afeb5f0044b1b7a4a5cfa5c928387646bd9dd05
+
 #import "FlutterBluePlugin.h"
 #import "Flutterblue.pbobjc.h"
 
@@ -35,6 +38,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 @property(nonatomic, retain) FlutterBlueStreamHandler *stateStreamHandler;
 @property(nonatomic, retain) CBCentralManager *centralManager;
 @property(nonatomic) NSMutableDictionary *scannedPeripherals;
+@property(nonatomic) NSMutableDictionary *connectedPeripherals;
 @property(nonatomic) NSMutableArray *servicesThatNeedDiscovered;
 @property(nonatomic) NSMutableArray *characteristicsThatNeedDiscovered;
 @property(nonatomic) LogLevel logLevel;
@@ -48,8 +52,9 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
   FlutterEventChannel* stateChannel = [FlutterEventChannel eventChannelWithName:NAMESPACE @"/state" binaryMessenger:[registrar messenger]];
   FlutterBluePlugin* instance = [[FlutterBluePlugin alloc] init];
   instance.channel = channel;
-
+  instance.centralManager = [[CBCentralManager alloc] initWithDelegate:instance queue:nil];
   instance.scannedPeripherals = [NSMutableDictionary new];
+  instance.connectedPeripherals = [NSMutableDictionary new];
   instance.servicesThatNeedDiscovered = [NSMutableArray new];
   instance.characteristicsThatNeedDiscovered = [NSMutableArray new];
   instance.logLevel = emergency;
@@ -63,12 +68,6 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 }
 
 - (void)handleMethodCall:(FlutterMethodCall*)call result:(FlutterResult)result {
-    NSLog(@"flutterblue call %@", call.method);
-
-    if(_centralManager == nil) {
-      _centralManager = [[CBCentralManager alloc] initWithDelegate:self queue:nil];
-    }
-    
   if ([@"setLogLevel" isEqualToString:call.method]) {
     NSNumber *logLevelIndex = [call arguments];
     _logLevel = (LogLevel)[logLevelIndex integerValue];
@@ -112,6 +111,10 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
   } else if([@"getConnectedDevices" isEqualToString:call.method]) {
     // Cannot pass blank UUID list for security reasons. Assume all devices have the Generic Access service 0x1800
     NSArray *periphs = [self->_centralManager retrieveConnectedPeripheralsWithServices:@[[CBUUID UUIDWithString:@"1800"]]];
+    // Insert connecteds devices in a NSMutableDictionary set peripheral and UUID
+      for(CBPeripheral *p in periphs) {
+          [self.connectedPeripherals setObject:p forKey:[[p identifier] UUIDString]];
+      }
     NSLog(@"getConnectedDevices periphs size: %lu", [periphs count]);
     result([self toFlutterData:[self toConnectedDeviceResponseProto:periphs]]);
   } else if([@"connect" isEqualToString:call.method]) {
@@ -119,14 +122,21 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
     ProtosConnectRequest *request = [[ProtosConnectRequest alloc] initWithData:[data data] error:nil];
     NSString *remoteId = [request remoteId];
     @try {
+      CBPeripheral *peripheralConnected = [_connectedPeripherals objectForKey:remoteId];
       CBPeripheral *peripheral = [_scannedPeripherals objectForKey:remoteId];
-      if(peripheral == nil) {
-        @throw [FlutterError errorWithCode:@"connect"
+        if(peripheralConnected == nil) {
+          if(peripheral == nil) {
+          @throw [FlutterError errorWithCode:@"connect"
                                    message:@"Peripheral not found"
                                    details:nil];
       }
-      // TODO: Implement Connect options (#36)
-      [_centralManager connectPeripheral:peripheral options:nil];
+       // TODO: Implement Connect options (#36)
+        if([peripheral state] == CBPeripheralStateDisconnected || [peripheral state] == CBPeripheralStateDisconnecting){
+          [_centralManager connectPeripheral:peripheral options:nil];
+        }
+      } else {
+          [_centralManager connectPeripheral:peripheralConnected options:nil];
+      }
       result(nil);
     } @catch(FlutterError *e) {
       result(e);
@@ -259,6 +269,15 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
     }
   } else if([@"requestMtu" isEqualToString:call.method]) {
     result([FlutterError errorWithCode:@"requestMtu" message:@"iOS does not allow mtu requests to the peripheral" details:NULL]);
+  } else if([@"readRssi" isEqualToString:call.method]) {
+    NSString *remoteId = [call arguments];
+    @try {
+      CBPeripheral *peripheral = [self findPeripheral:remoteId];
+      [peripheral readRSSI];
+      result(nil);
+    } @catch(FlutterError *e) {
+      result(e);
+    }
   } else {
     result(FlutterMethodNotImplemented);
   }
@@ -383,7 +402,8 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 - (void)centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)peripheral {
   NSLog(@"didConnectPeripheral");
   // Register self as delegate for peripheral
-  peripheral.delegate = self;
+  // se o usuáro disconnectar manualmente o código do erro será 0
+ peripheral.delegate = self;
   
   // Send initial mtu size
   uint32_t mtu = [self getMtu:peripheral];
@@ -396,7 +416,19 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 - (void)centralManager:(CBCentralManager *)central didDisconnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error {
   NSLog(@"didDisconnectPeripheral");
   // Unregister self as delegate for peripheral, not working #42
-  peripheral.delegate = nil;
+    // if the user disconnect manual the code error is 0
+   if([error code] != 0) {
+     // trying reconnect
+    @try {
+      NSLog(@"didConnectPeripheral:trying reconnect");
+      [central connectPeripheral: peripheral options:nil];
+    } @catch(FlutterError * e) {
+      NSLog(@"didConnectPeripheral:can't reconnect");
+    } 
+  } else {
+    NSLog(@"didDisconnectPeripheral:user disconnected");
+  peripheral.delegate = self;
+  }
   
   // Send connection state
   [_channel invokeMethod:@"DeviceState" arguments:[self toFlutterData:[self toDeviceStateProto:peripheral state:peripheral.state]]];
@@ -404,6 +436,17 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 
 - (void)centralManager:(CBCentralManager *)central didFailToConnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error {
   // TODO:?
+  // TODO:? Just going to try to issue a reconnect
+  NSLog(@"didFailToReconnectPeripheral");
+
+  //Conexão falhou -> tenta conectar novamente
+  @try {
+    NSLog(@"didFailToReconnectPeripheral:tentando conectar");
+    [central connectPeripheral:peripheral options:nil];
+  } @catch (FlutterError *e){
+    NSLog(@"didFailToReconnectPeripheral: conexão falhou");
+  }
+  [_channel invokeMethod:@"DeviceState" arguments:[self toFlutterData:[self toDeviceStateProto:peripheral state: peripheral.state]]];
 }
 
 //
@@ -542,6 +585,13 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
   [result setRequest:request];
   [result setSuccess:(error == nil)];
   [_channel invokeMethod:@"WriteDescriptorResponse" arguments:[self toFlutterData:result]];
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didReadRSSI:(NSNumber *)rssi error:(NSError *)error {
+  ProtosReadRssiResult *result = [[ProtosReadRssiResult alloc] init];
+  [result setRemoteId:[peripheral.identifier UUIDString]];
+  [result setRssi:[rssi intValue]];
+  [_channel invokeMethod:@"ReadRssiResult" arguments:[self toFlutterData:result]];
 }
 
 //
@@ -777,4 +827,3 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 }
 
 @end
-
