@@ -26,21 +26,28 @@ class BluetoothDevice {
       ..remoteId = id.toString()
       ..androidAutoConnect = autoConnect;
 
-    Timer? timer;
-    if (timeout != null) {
-      timer = Timer(timeout, () {
-        disconnect();
-        throw TimeoutException('Failed to connect in time.', timeout);
-      });
-    }
-
     await FlutterBlue.instance._channel
         .invokeMethod('connect', request.writeToBuffer());
 
-    await state.firstWhere((s) => s == BluetoothDeviceState.connected);
+    var stateFuture = state.firstWhere((s) => s == BluetoothDeviceState.connected);
 
-    timer?.cancel();
+    if (timeout != null) {
+      var isTimeOut = false;
+      var timeoutFuture = Future(() async {
+        await Future.delayed(timeout);
+        isTimeOut = true;
+      });
 
+      await Future.any([stateFuture, timeoutFuture]);
+
+      /// timeout
+      if (isTimeOut) {
+        disconnect();
+        throw TimeoutException('Failed to connect in time.', timeout);
+      }
+    } else {
+      await stateFuture;
+    }
     return;
   }
 
@@ -123,18 +130,48 @@ class BluetoothDevice {
 
   /// Request to change the MTU Size
   /// Throws error if request did not complete successfully
-  Future<void> requestMtu(int desiredMtu) async {
+  /// Request to change the MTU Size and returns the response back
+  /// Throws error if request did not complete successfully
+  Future<int> requestMtu(int desiredMtu) async {
     var request = protos.MtuSizeRequest.create()
       ..remoteId = id.toString()
       ..mtu = desiredMtu;
 
-    return FlutterBlue.instance._channel
+    var response = FlutterBlue.instance._methodStream
+        .where((m) => m.method == "MtuSize")
+        .map((m) => m.arguments)
+        .map((buffer) => protos.MtuSizeResponse.fromBuffer(buffer))
+        .where((p) => p.remoteId == id.toString())
+        .map((p) => p.mtu)
+        .first;
+
+    await FlutterBlue.instance._channel
         .invokeMethod('requestMtu', request.writeToBuffer());
+
+    return response;
   }
 
   /// Indicates whether the Bluetooth Device can send a write without response
   Future<bool> get canSendWriteWithoutResponse =>
       new Future.error(new UnimplementedError());
+
+  /// Read the RSSI for a connected remote device
+  Future<int> readRssi() async {
+    final remoteId = id.toString();
+    await FlutterBlue.instance._channel
+        .invokeMethod('readRssi', remoteId);
+
+    return FlutterBlue.instance._methodStream
+        .where((m) => m.method == "ReadRssiResult")
+        .map((m) => m.arguments)
+        .map((buffer) => protos.ReadRssiResult.fromBuffer(buffer))
+        .where((p) =>
+    (p.remoteId == remoteId))
+        .first
+        .then((c) {
+      return (c.rssi);
+    });
+  }
 
   @override
   bool operator ==(Object other) =>
