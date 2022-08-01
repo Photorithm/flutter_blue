@@ -588,10 +588,12 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 }
 
 - (void)peripheral:(CBPeripheral *)peripheral didReadRSSI:(NSNumber *)rssi error:(NSError *)error {
-  ProtosReadRssiResult *result = [[ProtosReadRssiResult alloc] init];
-  [result setRemoteId:[peripheral.identifier UUIDString]];
-  [result setRssi:[rssi intValue]];
-  [_channel invokeMethod:@"ReadRssiResult" arguments:[self toFlutterData:result]];
+  /// commented out for now
+
+  // ProtosReadRssiResult *result = [[ProtosReadRssiResult alloc] init];
+  // [result setRemoteId:[peripheral.identifier UUIDString]];
+  // [result setRssi:[rssi intValue]];
+  // [_channel invokeMethod:@"ReadRssiResult" arguments:[self toFlutterData:result]];
 }
 
 //
